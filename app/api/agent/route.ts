@@ -1,6 +1,15 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
+// The `web_search_20250305` server tool was added to the API in May 2025.
+// Older SDK versions may not have the type in their `Tool` union, so we
+// declare the shape explicitly and cast at the call site.
+type WebSearchTool = {
+  type: "web_search_20250305";
+  name: "web_search";
+  max_uses?: number;
+};
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -81,16 +90,19 @@ export async function POST(req: NextRequest) {
       try {
         send({ type: "status", label: "Thinking..." });
 
+        const webSearchTool: WebSearchTool = {
+          type: "web_search_20250305",
+          name: "web_search",
+          max_uses: 5,
+        };
+
         const anthropicStream = client.messages.stream({
           model: MODEL,
           max_tokens: MAX_TOKENS,
-          tools: [
-            {
-              type: "web_search_20250305",
-              name: "web_search",
-              max_uses: 5,
-            },
-          ],
+          // Cast: older SDK type unions don't include web_search_20250305,
+          // but the API accepts it at runtime.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          tools: [webSearchTool] as any,
           messages: [{ role: "user", content: userMessage }],
         });
 
