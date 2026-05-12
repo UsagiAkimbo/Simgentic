@@ -69,6 +69,12 @@ public class BridgeReceiver : MonoBehaviour
     void Start()
     {
 #if UNITY_WEBGL && !UNITY_EDITOR
+        // Don't steal keyboard input or focus from other DOM elements (e.g.
+        // the <input> field in app/agent/page.tsx). Without this, Unity's
+        // default WebGL input behavior pulls focus back to the canvas every
+        // time a form field gains it, making nearby HTML inputs un-typeable.
+        WebGLInput.captureAllKeyboardInput = false;
+
         try { JS_OnUnityReady(); }
         catch (Exception e) { Debug.LogWarning($"[Bridge] JS_OnUnityReady failed: {e.Message}"); }
 #else
