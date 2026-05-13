@@ -118,6 +118,58 @@ const UnityCanvas = forwardRef<UnityCanvasHandle, Props>(function UnityCanvas(
     []
   );
 
+  // Defense-in-depth against Unity's focus-stealing.
+  //
+  // The proper fix lives in C#: BridgeReceiver.Start() calls
+  //   WebGLInput.captureAllKeyboardInput = false;
+  // which disables Unity's default behavior of yanking focus back to the
+  // canvas whenever another DOM element receives it.
+  //
+  // We keep this JS shim as INSURANCE against the C# fix going missing — for
+  // example, when a fresh Unity build is shipped from a Unity project that
+  // hasn't been re-synced with this repo's unity-bridge/ scripts. Without
+  // either layer in place, every <input> field in the surrounding page
+  // becomes un-typeable: focus is granted, then immediately stolen, with no
+  // onChange ever firing. The cost of this shim (one event listener per
+  // keyboard event in capture phase, plus a focus() override on the canvas)
+  // is negligible compared to a silent regression of the input field.
+  useEffect(() => {
+    const isFormField = (el: EventTarget | null): boolean => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+    };
+
+    const passKeysThroughToFormFields = (e: KeyboardEvent) => {
+      if (isFormField(document.activeElement)) {
+        e.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener("keydown", passKeysThroughToFormFields, { capture: true });
+    window.addEventListener("keyup", passKeysThroughToFormFields, { capture: true });
+    window.addEventListener("keypress", passKeysThroughToFormFields, { capture: true });
+
+    const canvas = document.getElementById("unity-canvas") as HTMLCanvasElement | null;
+    let restoreFocus: (() => void) | null = null;
+    if (canvas) {
+      const originalFocus = canvas.focus.bind(canvas);
+      canvas.focus = function patchedFocus(options?: FocusOptions) {
+        if (isFormField(document.activeElement)) return;
+        return originalFocus(options);
+      };
+      restoreFocus = () => {
+        canvas.focus = originalFocus;
+      };
+    }
+
+    return () => {
+      window.removeEventListener("keydown", passKeysThroughToFormFields, { capture: true });
+      window.removeEventListener("keyup", passKeysThroughToFormFields, { capture: true });
+      window.removeEventListener("keypress", passKeysThroughToFormFields, { capture: true });
+      restoreFocus?.();
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 

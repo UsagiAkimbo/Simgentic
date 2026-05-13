@@ -26,6 +26,9 @@ type AgentState =
   | "done"
   | "error";
 
+// One conversation turn. Mirrors the Turn type in app/api/agent/route.ts.
+type Turn = { role: "user" | "assistant"; content: string };
+
 /**
  * Map the human-readable status `label` from the SSE feed to the discrete
  * AgentState the Unity character expects. Order matters here — the longest /
@@ -73,6 +76,7 @@ export default function HomePage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [history, setHistory] = useState<Turn[]>([]);
 
   const answerRef = useRef<HTMLDivElement | null>(null);
 
@@ -82,90 +86,111 @@ export default function HomePage() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [answer]);
 
-  const run = useCallback(async (message: string) => {
-    setRunning(true);
-    setErrorMsg(null);
-    setAnswer("");
-    setPanelOpen(true);
-    sendUnity(unity.current, "thinking");
+  const run = useCallback(
+    async (message: string) => {
+      setRunning(true);
+      setErrorMsg(null);
+      setAnswer("");
+      setPanelOpen(true);
+      sendUnity(unity.current, "thinking");
 
-    const controller = new AbortController();
-    abortRef.current = controller;
+      // Accumulate the streamed answer locally so we can append the (user,
+      // assistant) pair to history once the stream finishes. React state
+      // updates are async, so we can't read setAnswer's value here directly.
+      let accumulated = "";
+      let didFinish = false;
 
-    try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message }),
-        signal: controller.signal,
-      });
+      const controller = new AbortController();
+      abortRef.current = controller;
 
-      if (!res.ok || !res.body) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Request failed (${res.status}).`);
-      }
+      const applyFrame = (frame: SseFrame) => {
+        switch (frame.type) {
+          case "status": {
+            const { state, detail } = frameToUnityState(frame.label);
+            sendUnity(unity.current, state, detail);
+            break;
+          }
+          case "text":
+            accumulated += frame.delta;
+            setAnswer(accumulated);
+            break;
+          case "done":
+            didFinish = true;
+            sendUnity(unity.current, "done");
+            break;
+          case "error":
+            setErrorMsg(frame.message);
+            sendUnity(unity.current, "error", frame.message);
+            break;
+        }
+      };
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      try {
+        const res = await fetch("/api/agent", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message, history }),
+          signal: controller.signal,
+        });
 
-      // Parse `data: {json}\n\n` SSE frames out of the stream.
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        if (!res.ok || !res.body) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `Request failed (${res.status}).`);
+        }
 
-        let sepIndex: number;
-        while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
-          const chunk = buffer.slice(0, sepIndex);
-          buffer = buffer.slice(sepIndex + 2);
-          for (const line of chunk.split("\n")) {
-            if (!line.startsWith("data:")) continue;
-            const payload = line.slice(5).trim();
-            if (!payload) continue;
-            let frame: SseFrame;
-            try {
-              frame = JSON.parse(payload) as SseFrame;
-            } catch {
-              continue;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        // Parse `data: {json}\n\n` SSE frames out of the stream.
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let sepIndex: number;
+          while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+            const chunk = buffer.slice(0, sepIndex);
+            buffer = buffer.slice(sepIndex + 2);
+            for (const line of chunk.split("\n")) {
+              if (!line.startsWith("data:")) continue;
+              const payload = line.slice(5).trim();
+              if (!payload) continue;
+              let frame: SseFrame;
+              try {
+                frame = JSON.parse(payload) as SseFrame;
+              } catch {
+                continue;
+              }
+              applyFrame(frame);
             }
-            applyFrame(frame);
           }
         }
-      }
-    } catch (err) {
-      if ((err as { name?: string }).name === "AbortError") {
-        sendUnity(unity.current, "idle");
-      } else {
-        const msg = err instanceof Error ? err.message : "Something went wrong.";
-        setErrorMsg(msg);
-        sendUnity(unity.current, "error", msg);
-      }
-    } finally {
-      setRunning(false);
-      abortRef.current = null;
-    }
-  }, []);
+      } catch (err) {
+        if ((err as { name?: string }).name === "AbortError") {
+          sendUnity(unity.current, "idle");
+        } else {
+          const msg = err instanceof Error ? err.message : "Something went wrong.";
+          setErrorMsg(msg);
+          sendUnity(unity.current, "error", msg);
+        }
+      } finally {
+        setRunning(false);
+        abortRef.current = null;
 
-  function applyFrame(frame: SseFrame) {
-    switch (frame.type) {
-      case "status": {
-        const { state, detail } = frameToUnityState(frame.label);
-        sendUnity(unity.current, state, detail);
-        break;
+        // Only persist completed turns. Partial answers from aborted /
+        // errored requests would corrupt context for the next question.
+        if (didFinish && accumulated.length > 0) {
+          setHistory((prev) => [
+            ...prev,
+            { role: "user", content: message },
+            { role: "assistant", content: accumulated },
+          ]);
+        }
       }
-      case "text":
-        setAnswer((prev) => prev + frame.delta);
-        break;
-      case "done":
-        sendUnity(unity.current, "done");
-        break;
-      case "error":
-        setErrorMsg(frame.message);
-        sendUnity(unity.current, "error", frame.message);
-        break;
-    }
-  }
+    },
+    [history]
+  );
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -177,6 +202,15 @@ export default function HomePage() {
 
   function onStop() {
     abortRef.current?.abort();
+  }
+
+  function onNewConversation() {
+    abortRef.current?.abort();
+    setHistory([]);
+    setAnswer("");
+    setErrorMsg(null);
+    setPanelOpen(false);
+    sendUnity(unity.current, "idle");
   }
 
   return (
@@ -232,6 +266,17 @@ export default function HomePage() {
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
       >
         <div className="mx-auto flex max-w-xl items-center gap-2">
+          {history.length > 0 && !running && (
+            <button
+              type="button"
+              onClick={onNewConversation}
+              aria-label="Start a new conversation"
+              title="New conversation"
+              className="h-12 w-12 shrink-0 rounded-full border border-white/10 bg-slate-900 text-2xl leading-none text-slate-400 hover:text-slate-200 active:bg-slate-800"
+            >
+              +
+            </button>
+          )}
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}

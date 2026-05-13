@@ -8,15 +8,15 @@ The sprint is broken into five phases. Each is independent — you can ship them
 
 ---
 
-## Phase 1: Drop the JS focus workaround
+## Phase 1: ~~Drop~~ Keep the JS focus workaround (revised)
 
-**Why:** in Sprint C we added a JavaScript shim in `components/UnityCanvas.tsx` that intercepted keyboard events at window capture phase and patched the canvas's `focus()` method, all to work around `WebGLInput.captureAllKeyboardInput = true` stealing focus from the input field. After the C# fix shipped (`WebGLInput.captureAllKeyboardInput = false` in `BridgeReceiver.Start()`), Unity no longer steals focus, and the JS shim is doing redundant work on every keystroke. Time to delete it.
+**Original plan:** delete the JS focus shim in `components/UnityCanvas.tsx` because the C# fix in `BridgeReceiver.Start()` (`WebGLInput.captureAllKeyboardInput = false;`) made it redundant.
 
-**Risk:** very low if your last Vercel deploy used a Unity build that contains the C# fix. Confirm by inspecting the deployed `sprite-agent.framework.js.unityweb` — it should contain the string `captureAllKeyboardInput`. If not, rebuild Unity first, then drop the JS shim.
+**Why this was a mistake:** the JS shim wasn't redundant — it was insurance. In practice, Unity rebuilds get done from the Unity project, which is a separate folder from this repo. If the Unity project's copy of `BridgeReceiver.cs` ever drifts behind the repo's copy (easy to forget when copying just one or two scripts for a small change), the next rebuild silently strips the C# fix, and the input field becomes un-typeable with no error message. We hit exactly this regression after Phase 4. Keeping the JS shim as permanent defense-in-depth costs almost nothing (one event listener per keystroke in capture phase) and prevents a class of silent regressions.
 
-**Change:** in `components/UnityCanvas.tsx`, delete the entire `useEffect` block that begins with the comment `// Unity WebGL defaults to WebGLInput.captureAllKeyboardInput = true...` and ends with the cleanup return. That's the only change to that file. Keep the callback-stabilization refs and the boot effect — those are still load-bearing.
+**Revised action:** **leave the JS shim in place.** Don't delete it.
 
-After deleting, hard reload `/`, tap the input, type a character. If a character appears, you're done with Phase 1.
+**Process improvement:** when you rebuild Unity, make a habit of copying *all* current `unity-bridge/*.cs` scripts into your Unity project, not just the ones you're actively changing. The repo's `unity-bridge/` directory is the source of truth; the Unity project's `Assets/Scripts/` should mirror it.
 
 ---
 

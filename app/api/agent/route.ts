@@ -23,6 +23,13 @@ type SseFrame =
   | { type: "done" }
   | { type: "error"; message: string };
 
+// One conversation turn. Mirrors the Turn type in app/page.tsx.
+type Turn = { role: "user" | "assistant"; content: string };
+
+// Cap how many turns we accept from the client. 20 keeps the prompt bounded
+// even on long sessions; older turns get dropped silently.
+const MAX_HISTORY_TURNS = 20;
+
 function sseEncode(frame: SseFrame): string {
   return `data: ${JSON.stringify(frame)}\n\n`;
 }
@@ -48,8 +55,9 @@ export async function POST(req: NextRequest) {
   }
 
   let userMessage: string;
+  let history: Turn[] = [];
   try {
-    const body = (await req.json()) as { message?: unknown };
+    const body = (await req.json()) as { message?: unknown; history?: unknown };
     if (typeof body.message !== "string" || body.message.trim().length === 0) {
       return new Response(
         JSON.stringify({ error: "Body must be { message: string }." }),
@@ -57,6 +65,20 @@ export async function POST(req: NextRequest) {
       );
     }
     userMessage = body.message.trim();
+
+    if (Array.isArray(body.history)) {
+      history = body.history
+        .filter((h: unknown): h is Turn => {
+          if (!h || typeof h !== "object") return false;
+          const obj = h as Record<string, unknown>;
+          return (
+            (obj.role === "user" || obj.role === "assistant") &&
+            typeof obj.content === "string" &&
+            obj.content.length > 0
+          );
+        })
+        .slice(-MAX_HISTORY_TURNS);
+    }
   } catch {
     return new Response(JSON.stringify({ error: "Invalid JSON body." }), {
       status: 400,
@@ -103,7 +125,10 @@ export async function POST(req: NextRequest) {
           // but the API accepts it at runtime.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           tools: [webSearchTool] as any,
-          messages: [{ role: "user", content: userMessage }],
+          messages: [
+            ...history,
+            { role: "user", content: userMessage },
+          ],
         });
 
         for await (const event of anthropicStream) {
