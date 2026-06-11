@@ -9,6 +9,9 @@ using UnityEngine;
 ///   - the active/inactive flag on the ThoughtBubble GameObject
 ///   - the text content of the TMP_Text inside the bubble
 ///
+/// (Renamed from CharacterController in Sprint E — that name collides with
+/// UnityEngine.CharacterController, which breaks AddComponent/GetComponent.)
+///
 /// Setup:
 ///   1. Place this script on your character GameObject (the one with the
 ///      Animator component).
@@ -24,7 +27,7 @@ using UnityEngine;
 /// Real agent traffic from /api/agent will usually carry a meaningful
 /// detail (a search query, a doc title, etc.) which takes precedence.
 /// </summary>
-public class CharacterController : MonoBehaviour
+public class AgentCharacterController : MonoBehaviour
 {
     [SerializeField] BridgeReceiver bridge;
     [SerializeField] Animator animator;

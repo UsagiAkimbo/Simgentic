@@ -20,11 +20,22 @@ type CreateUnityInstance = (
   onProgress?: (progress: number) => void
 ) => Promise<UnityInstance>;
 
+/**
+ * A UI interaction forwarded from the Unity overlay (radial menu, panels,
+ * model picker). Mirrors the JSON emitted by UIOverlayController.Emit in
+ * unity-bridge/UIOverlayController.cs via JS_OnUiEvent in the jslib.
+ */
+export type UnityUiEvent = {
+  action: string;
+  value?: string;
+};
+
 declare global {
   interface Window {
     createUnityInstance?: CreateUnityInstance;
     spriteAgent?: {
       onUnityReady?: () => void;
+      onUiEvent?: (event: UnityUiEvent) => void;
     };
   }
 }
@@ -58,6 +69,8 @@ type Props = {
   compression?: Compression;
   /** Called once Unity fires JS_OnUnityReady (scene is live and listening). */
   onReady?: () => void;
+  /** Called whenever the Unity overlay UI emits an interaction event. */
+  onUiEvent?: (event: UnityUiEvent) => void;
   /** Called if the loader fails to boot. */
   onError?: (msg: string) => void;
   /** Called with 0..1 during the loader's download/init phase. */
@@ -77,6 +90,7 @@ const UnityCanvas = forwardRef<UnityCanvasHandle, Props>(function UnityCanvas(
     buildName,
     compression = "gzip",
     onReady,
+    onUiEvent,
     onError,
     onProgress,
     className,
@@ -95,13 +109,15 @@ const UnityCanvas = forwardRef<UnityCanvasHandle, Props>(function UnityCanvas(
   // visible scene change is wiped before the next frame renders. This is the
   // canonical Unity-WebGL-in-React footgun.
   const onReadyRef = useRef(onReady);
+  const onUiEventRef = useRef(onUiEvent);
   const onErrorRef = useRef(onError);
   const onProgressRef = useRef(onProgress);
   useEffect(() => {
     onReadyRef.current = onReady;
+    onUiEventRef.current = onUiEvent;
     onErrorRef.current = onError;
     onProgressRef.current = onProgress;
-  }, [onReady, onError, onProgress]);
+  }, [onReady, onUiEvent, onError, onProgress]);
 
   useImperativeHandle(
     ref,
@@ -181,6 +197,10 @@ const UnityCanvas = forwardRef<UnityCanvasHandle, Props>(function UnityCanvas(
       setBooted(true);
       onReadyRef.current?.();
     };
+    window.spriteAgent.onUiEvent = (event) => {
+      if (cancelled) return;
+      onUiEventRef.current?.(event);
+    };
 
     const loaderSrc = `${buildPath}/${buildName}.loader.js`;
 
@@ -252,7 +272,10 @@ const UnityCanvas = forwardRef<UnityCanvasHandle, Props>(function UnityCanvas(
 
     return () => {
       cancelled = true;
-      if (window.spriteAgent) window.spriteAgent.onUnityReady = undefined;
+      if (window.spriteAgent) {
+        window.spriteAgent.onUnityReady = undefined;
+        window.spriteAgent.onUiEvent = undefined;
+      }
       const inst = instanceRef.current;
       instanceRef.current = null;
       if (inst) void inst.Quit().catch(() => void 0);

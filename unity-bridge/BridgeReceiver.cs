@@ -48,6 +48,14 @@ public class BridgeReceiver : MonoBehaviour
     [Tooltip("If present in the scene, its color will change per state.")]
     public Renderer testCubeRenderer;
 
+    [Header("Sprint D Phase 6: dual camera mode")]
+    [Tooltip("Wire the scene's CameraController here. SetCameraMode() forwards to it. Optional — auto-found at Awake if unset.")]
+    [SerializeField] CameraController cameraController;
+
+    [Header("Sprint E: Cowork overlay UI")]
+    [Tooltip("Wire the OverlayCanvas's UIOverlayController here. SetUiState() forwards to it. Optional — auto-found at Awake if unset.")]
+    [SerializeField] UIOverlayController overlayController;
+
     public AgentState CurrentState { get; private set; } = AgentState.Idle;
     public string CurrentDetail { get; private set; } = string.Empty;
 
@@ -63,6 +71,16 @@ public class BridgeReceiver : MonoBehaviour
         {
             var cube = GameObject.Find("TestCube");
             if (cube != null) testCubeRenderer = cube.GetComponent<Renderer>();
+        }
+
+        if (cameraController == null)
+        {
+            cameraController = FindObjectOfType<CameraController>();
+        }
+
+        if (overlayController == null)
+        {
+            overlayController = FindObjectOfType<UIOverlayController>();
         }
     }
 
@@ -139,6 +157,55 @@ public class BridgeReceiver : MonoBehaviour
         }
 
         OnStateChanged?.Invoke(parsed, CurrentDetail);
+    }
+
+    /// <summary>
+    /// Called from the host. Arg is a plain string: "default" or "focused".
+    /// Anything unrecognized falls back to default (Sims overview) so a typo
+    /// can't strand the camera in some unintended position.
+    /// </summary>
+    public void SetCameraMode(string mode)
+    {
+        if (cameraController == null)
+        {
+            Debug.LogWarning("[Bridge] SetCameraMode called but no CameraController is wired.");
+            return;
+        }
+
+        var camMode = mode == "focused"
+            ? CameraController.CameraMode.Focused
+            : CameraController.CameraMode.Default;
+        cameraController.SetMode(camMode);
+        Debug.Log($"[Bridge] cameraMode={camMode}");
+    }
+
+    /// <summary>
+    /// Called from the host. Arg is a JSON string of UIOverlayController.UiStateMessage
+    /// shape: {"model":"claude-sonnet-4-5","thinking":"on"}. Pushes authoritative
+    /// UI state (selected model highlight, thinking toggle) into the overlay
+    /// without echoing events back to JS.
+    /// </summary>
+    public void SetUiState(string json)
+    {
+        if (overlayController == null)
+        {
+            Debug.LogWarning("[Bridge] SetUiState called but no UIOverlayController is wired.");
+            return;
+        }
+
+        UIOverlayController.UiStateMessage msg;
+        try
+        {
+            msg = JsonUtility.FromJson<UIOverlayController.UiStateMessage>(json);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[Bridge] SetUiState invalid JSON: {e.Message} raw={json}");
+            return;
+        }
+
+        overlayController.ApplyUiState(msg);
+        Debug.Log($"[Bridge] uiState model={msg?.model} thinking={msg?.thinking}");
     }
 
     static AgentState ParseState(string s)
